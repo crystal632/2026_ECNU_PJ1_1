@@ -1,0 +1,124 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>问卷系统</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.55 system-ui, "Microsoft YaHei", sans-serif; color: #203044; background: #f3f6fa; }
+    body { margin: 0; } header { background: #176b5b; color: white; padding: 18px max(20px, calc((100% - 960px)/2)); }
+    main { max-width: 920px; margin: 24px auto; padding: 0 16px; } section, .card { background: white; border: 1px solid #dce4eb; border-radius: 10px; padding: 20px; margin: 16px 0; }
+    h1,h2,h3 { margin-top: 0; } label { display:block; font-weight:600; margin: 12px 0 5px; } input,textarea,select,button { font: inherit; }
+    input,textarea,select { box-sizing:border-box; width:100%; padding:10px; border:1px solid #aebbc8; border-radius:6px; } textarea { min-height:180px; font-family:ui-monospace,monospace; }
+    button { border:0; border-radius:6px; background:#176b5b; color:#fff; padding:10px 16px; cursor:pointer; margin:8px 6px 0 0; } button.secondary { background:#526579; }
+    .row { display:flex; gap:10px; align-items:end; flex-wrap:wrap; } .row > * { flex:1; } .muted { color:#5c6c7b; } .error { color:#a52323; white-space:pre-wrap; } .success { color:#176b5b; }
+    .question { border-top:1px solid #e1e6eb; padding:14px 0; } .question label { font-weight:400; } .pill { display:inline-block; padding:2px 8px; background:#edf3f5; border-radius:99px; margin-left:8px; font-size:.85em; }
+    code { overflow-wrap:anywhere; } .hidden { display:none; }
+  </style>
+</head>
+<body>
+<header><strong>问卷系统</strong><span class="pill">第二阶段</span></header>
+<main>
+  <section id="auth">
+    <h2>账号</h2><p class="muted">注册或登录后，可以创建问卷、填写问卷并查看自己创建的问卷统计。</p>
+    <div class="row"><div><label for="username">用户名</label><input id="username" minlength="3" autocomplete="username"></div><div><label for="password">密码</label><input id="password" type="password" minlength="8" autocomplete="current-password"></div></div>
+    <button id="register">注册</button><button id="login">登录</button><button id="logout" class="secondary hidden">退出登录</button><span id="authState" class="muted"></span>
+  </section>
+  <section id="creator" class="hidden">
+    <h2>创建问卷</h2><p class="muted">粘贴符合 API 格式的 JSON。问卷创建后默认开放。</p>
+    <h2>复用题目题库</h2><p class="muted">保存题目、创建新版本、共享题目并查看历史、使用情况和跨问卷统计。</p>
+    <label for="questionJson">新建题目配置</label><textarea id="questionJson" spellcheck="false"></textarea><button id="saveQuestion">保存题目</button><button id="refreshQuestions" class="secondary">刷新题目</button><div id="questionList"></div>
+    <label for="bankName">新建题库</label><div class="row"><input id="bankName" placeholder="题库名称"><button id="createBank">创建题库</button></div><div id="bankList"></div>
+    <label for="surveyJson">问卷配置</label><textarea id="surveyJson" spellcheck="false"></textarea><button id="createSurvey">创建问卷</button>
+    <h2 style="margin-top:28px">我创建的问卷</h2><button id="refreshSurveys" class="secondary">刷新列表</button><div id="surveyList"></div>
+  </section>
+  <section id="respondent" class="hidden"><h2>填写问卷</h2><div id="formSurvey"><p class="muted">从问卷链接进入后，会在此显示问卷。</p></div></section>
+  <section id="notice" aria-live="polite"></section>
+</main>
+<script>
+const tokenKey = 'questionnaire_access_token';
+const $ = (id) => document.getElementById(id);
+let token = localStorage.getItem(tokenKey) || '';
+const sample = {title:'我的问卷',description:'请填写问卷',is_anonymous:false,questions:[{id:'q1',title:'你喜欢什么水果？',type:'single_choice',options:['苹果','香蕉'],required:true}]};
+$('surveyJson').value = JSON.stringify(sample, null, 2);
+$('questionJson').value = JSON.stringify({id:'age',title:'年龄',type:'number',required:true,validation:{integer:true,min:0,max:120}},null,2);
+let currentUser = null;
+function message(text, error=false) { $('notice').innerHTML = `<p class="${error?'error':'success'}"></p>`; $('notice').firstChild.textContent=text; }
+async function api(path, options={}) {
+  const headers = {'Content-Type':'application/json', ...(token?{Authorization:`Bearer ${token}`}:{})};
+  const response = await fetch(path, {...options, headers:{...headers,...(options.headers||{})}});
+  const body = await response.json().catch(()=>({detail:response.statusText}));
+  if (!response.ok) throw new Error(typeof body.detail==='string'?body.detail:JSON.stringify(body.detail||body));
+  return body;
+}
+function renderAuth() {
+  $('authState').textContent = token ? '已登录' : '未登录';
+  $('logout').classList.toggle('hidden',!token);
+  $('creator').classList.toggle('hidden',!token);
+  if(token) loadCurrentUser();;
+  loadLinkedSurvey();
+}
+async function loadCurrentUser(){try{currentUser=await api('/api/me');await loadSurveys();await loadQuestions();}catch(e){message(e.message,true);}}
+async function registerOrLogin(path) {
+  try {
+    const data={username:$('username').value,password:$('password').value};
+    const result=await api(path,{method:'POST',body:JSON.stringify(data)});
+    if(path.endsWith('login')) { token=result.access_token; localStorage.setItem(tokenKey,token); renderAuth(); }
+    message(path.endsWith('login')?'登录成功。':'注册成功，请登录。');
+  } catch(e) { message(e.message,true); }
+}
+$('register').onclick=()=>registerOrLogin('/api/register');
+$('login').onclick=()=>registerOrLogin('/api/login');
+$('logout').onclick=()=>{token='';localStorage.removeItem(tokenKey);renderAuth();message('已退出登录。');};
+$('createSurvey').onclick=async()=>{
+  try { const config=JSON.parse($('surveyJson').value); const result=await api('/api/surveys',{method:'POST',body:JSON.stringify(config)}); message(`创建成功。问卷 ID：${result.survey_id}；填写链接：${location.origin}/app/#survey=${result.survey_id}`); await loadSurveys(); }
+  catch(e){message(e.message,true);}
+};
+$('refreshSurveys').onclick=loadSurveys;
+
+$('saveQuestion').onclick=async()=>{try{const q=await api('/api/questions',{method:'POST',body:$('questionJson').value});message(`题目已保存 ${q.question_id}`);await loadQuestions();}catch(e){message(e.message,true);}};
+$('refreshQuestions').onclick=loadQuestions;
+$('createBank').onclick=async()=>{try{await api('/api/question-banks',{method:'POST',body:JSON.stringify({name:$('bankName').value})});$('bankName').value='';await loadBanks();}catch(e){message(e.message,true);}};
+async function loadBanks(){try{const [banks,questions]=await Promise.all([api('/api/question-banks'),api('/api/questions')]),list=$('bankList');list.replaceChildren();for(const b of banks){const card=document.createElement('article');card.className='card';const p=document.createElement('p');p.textContent=`${b.name} (${b.question_ids.length} 个题目版本)`;card.append(p);const select=document.createElement('select');for(const q of questions){const option=document.createElement('option');option.value=q.question_id;option.textContent=`${q.title} (v${q.version})`;select.append(option);}card.append(select);const add=document.createElement('button');add.textContent='添加所选题目';add.onclick=async()=>{try{const current=await api(`/api/question-banks/${b.bank_id}/questions`);const ids=[...new Set([...current.map(q=>q.question_id),select.value])];await api(`/api/question-banks/${b.bank_id}/questions`,{method:'PUT',body:JSON.stringify({question_ids:ids})});await loadBanks();}catch(e){message(e.message,true);}};card.append(add);const useBank=document.createElement('button');useBank.className='secondary';useBank.textContent='将题库题目加入问卷';useBank.onclick=async()=>{try{const items=await api(`/api/question-banks/${b.bank_id}/questions`),config=JSON.parse($('surveyJson').value);config.question_ids=[...new Set([...(config.question_ids||[]),...items.map(q=>q.question_id)])];$('surveyJson').value=JSON.stringify(config,null,2);message('题库题目已加入问卷。');}catch(e){message(e.message,true);}};card.append(useBank);const update=document.createElement('button');update.className='secondary';update.textContent='将所选题目更新为最新版本';update.onclick=async()=>{try{await api(`/api/question-banks/${b.bank_id}/questions/${select.value}/update`,{method:'POST'});await loadBanks();}catch(e){message(e.message,true);}};card.append(update);list.append(card);}}catch(e){message(e.message,true);}}
+async function loadQuestions(){if(!token)return;try{const questions=await api('/api/questions'),list=$('questionList');list.replaceChildren();for(const q of questions){const card=document.createElement('article');card.className='card';const h=document.createElement('h3');h.textContent=`${q.title} (v${q.version})`;card.append(h);const p=document.createElement('p');p.textContent=`${q.type} | ${q.question_id}`;card.append(p);const use=document.createElement('button');use.textContent='加入问卷';use.onclick=()=>{try{const c=JSON.parse($('surveyJson').value);c.question_ids=[...new Set([...(c.question_ids||[]),q.question_id])];$('surveyJson').value=JSON.stringify(c,null,2);message('已加问卷');}catch{message('Survey JSON is invalid.',true);}};card.append(use);const history=document.createElement('button');history.className='secondary';history.textContent='版本历史';history.onclick=async()=>{try{message(JSON.stringify(await api(`/api/questions/${q.question_id}/history`),null,2));}catch(e){message(e.message,true);}};card.append(history);if(q.owner_id===currentUser?.user_id){const restore=document.createElement('button');restore.className='secondary';restore.textContent='恢复历史版本';restore.onclick=async()=>{try{const versions=await api(`/api/questions/${q.question_id}/history`);const choices=versions.map(v=>`v${v.version}: ${v.question_id}`).join('\n');const id=prompt(`输入要恢复的历史版本ID\n${choices}`);if(!id)return;await api(`/api/questions/${q.question_id}/restore/${id}`,{method:'POST'});await loadQuestions();message('已恢复为新版本');}catch(e){message(e.message,true);}};card.append(restore);}const details=document.createElement('button');details.className='secondary';details.textContent='使用情况与统计';details.onclick=async()=>{try{const [u,st]=await Promise.all([api(`/api/questions/${q.question_id}/usage`),api(`/api/questions/${q.question_id}/statistics`)]);message(`使用此题目的问卷\n${JSON.stringify(u,null,2)}\n跨问卷统计\n${JSON.stringify(st,null,2)}`);}catch(e){message(e.message,true);}};card.append(details);if(q.owner_id===currentUser?.user_id){const version=document.createElement('button');version.className='secondary';version.textContent='创建新版本';version.onclick=async()=>{try{const data=prompt('请输入新版本题目完整定义',JSON.stringify({id:q.id,title:q.title,type:q.type,options:q.options,required:q.required,validation:q.validation,jump_logic:q.jump_logic}));if(!data)return;await api(`/api/questions/${q.question_id}/versions`,{method:'POST',body:data});await loadQuestions();}catch(e){message(e.message,true);}};card.append(version);const share=document.createElement('button');share.className='secondary';share.textContent='共享';share.onclick=async()=>{const names=prompt('输入接收者用户名、多个用英文逗号分隔');if(!names)return;try{await api(`/api/questions/${q.question_id}/share`,{method:'PUT',body:JSON.stringify({usernames:names.split(',').map(x=>x.trim()).filter(Boolean)})});message('题目已共享');}catch(e){message(e.message,true);}};card.append(share);}list.append(card);}await loadBanks();}catch(e){message(e.message,true);}}
+async function loadSurveys(){
+  if(!token)return;
+  try { const surveys=await api('/api/surveys'); const list=$('surveyList'); list.replaceChildren();
+    if(!surveys.length){list.textContent='还没有问卷。';return;}
+    surveys.forEach(s=>{const card=document.createElement('article');card.className='card';const title=document.createElement('h3');title.textContent=s.title;card.append(title);
+      const info=document.createElement('p');info.textContent=`状态：${s.status}；题目数：${s.questions.length}；ID：${s.survey_id}`;card.append(info);
+      const link=document.createElement('p');const a=document.createElement('a');a.href=`/app/#survey=${s.survey_id}`;a.textContent='打开填写链接';link.append(a);card.append(link);
+      const stats=document.createElement('button');stats.textContent='查看统计';stats.onclick=async()=>{try{const r=await api(`/api/surveys/${s.survey_id}/statistics`);message(JSON.stringify(r,null,2));}catch(e){message(e.message,true);}};card.append(stats);
+      const toggle=document.createElement('button');toggle.className='secondary';toggle.textContent=s.status==='open'?'关闭问卷':'重新开放';toggle.onclick=async()=>{try{await api(`/api/surveys/${s.survey_id}`,{method:'PATCH',body:JSON.stringify({status:s.status==='open'?'closed':'open'})});await loadSurveys();message('问卷状态已更新。');}catch(e){message(e.message,true);}};card.append(toggle);list.append(card);
+    });
+  } catch(e){message(e.message,true);}
+}
+function addQuestionControl(container,q){
+  const wrap=document.createElement('div');wrap.className='question';wrap.dataset.questionId=q.id;const title=document.createElement('strong');title.textContent=q.title+(q.required?' *':'');wrap.append(title);
+  let input;
+  if(q.type==='single_choice'||q.type==='multiple_choice'){
+    (q.options||[]).forEach(option=>{const label=document.createElement('label');input=document.createElement('input');input.type=q.type==='single_choice'?'radio':'checkbox';input.name=q.id;input.value=option;input.required=!!q.required&&q.type==='single_choice';label.append(input,document.createTextNode(' '+option));wrap.append(label);});
+  } else { input=document.createElement('input');input.type=q.type==='number'?'number':'text';input.name=q.id;input.required=!!q.required;if(q.type==='text')input.maxLength=(q.validation||{}).max_length||10000;wrap.append(input); }
+  container.append(wrap);
+}
+async function loadLinkedSurvey(){
+  const match=location.hash.match(/survey=([a-f0-9]{24})/i);if(!match){$('respondent').classList.add('hidden');return;}
+  $('respondent').classList.remove('hidden');const box=$('formSurvey');box.replaceChildren();
+  if(!token){box.textContent='请先在上方登录，再填写问卷。';$('respondent').scrollIntoView({behavior:'smooth',block:'start'});return;}
+  try{const survey=await api(`/survey/${match[1]}`);const h=document.createElement('h3');h.textContent=survey.title;box.append(h);const d=document.createElement('p');d.textContent=survey.description||'';box.append(d);
+    const form=document.createElement('form');survey.questions.forEach(q=>addQuestionControl(form,q));
+    const answerFor=(q)=>{const controls=[...form.querySelectorAll(`[name="${CSS.escape(q.id)}"]`)];if(q.type==='single_choice')return controls.find(c=>c.checked)?.value;if(q.type==='multiple_choice')return controls.filter(c=>c.checked).map(c=>c.value);return q.type==='number'?Number(controls[0]?.value):controls[0]?.value;};
+    const matches=(answer,rule)=>{const m=rule.match(/^(>=|<=|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)$/);if(m){const a=Number(answer),b=Number(m[2]);if(!Number.isFinite(a))return false;return ({'>=':a>=b,'<=':a<=b,'>':a>b,'<':a<b,'==':a===b,'!=':a!==b})[m[1]];}return answer===rule||(Array.isArray(answer)&&answer.includes(rule));};
+    const updatePath=()=>{const visible=new Set();let current=survey.questions[0]?.id;const byId=Object.fromEntries(survey.questions.map(q=>[q.id,q]));while(current&&current!=='end'&&!visible.has(current)){visible.add(current);const q=byId[current];if(!q)break;const answer=answerFor(q);let target=Object.entries(q.jump_logic||{}).find(([rule])=>matches(answer,rule))?.[1];if(!target){const i=survey.questions.findIndex(x=>x.id===current);target=survey.questions[i+1]?.id||'end';}current=target;}form.querySelectorAll('.question').forEach(el=>{const show=visible.has(el.dataset.questionId);el.hidden=!show;el.querySelectorAll('input').forEach(i=>i.required=show&&!!byId[el.dataset.questionId].required&&(byId[el.dataset.questionId].type!=='multiple_choice'));});};
+    form.addEventListener('change',updatePath);form.addEventListener('input',updatePath);updatePath();
+    const submit=document.createElement('button');submit.textContent='提交答卷';form.append(submit);form.onsubmit=async event=>{event.preventDefault();const answers={};survey.questions.forEach(q=>{const controls=[...form.querySelectorAll(`[name="${CSS.escape(q.id)}"]`)];if(q.type==='single_choice')answers[q.id]=controls.find(c=>c.checked)?.value;else if(q.type==='multiple_choice')answers[q.id]=controls.filter(c=>c.checked).map(c=>c.value);else {const v=controls[0]?.value;if(v!==undefined&&v!=='')answers[q.id]=q.type==='number'?Number(v):v;}});try{await api(`/survey/${match[1]}/responses`,{method:'POST',body:JSON.stringify({answers})});message('答卷提交成功。');form.reset();updatePath();}catch(e){message(e.message,true);}};box.append(form);$('respondent').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){box.textContent=e.message;message(e.message,true);$('respondent').scrollIntoView({behavior:'smooth',block:'start'});}
+}
+window.addEventListener('hashchange',loadLinkedSurvey);
+renderAuth();
+</script>
+</body>
+</html>
+
+
+
