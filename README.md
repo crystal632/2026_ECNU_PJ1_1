@@ -33,5 +33,3 @@ uvicorn main:app --reload
   ]
 }
 ```
-
-运行自动化用例：`python -m pytest -q`。提交前以实际运行结果为准。
